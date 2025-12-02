@@ -5,10 +5,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "config.h"
+
 #if Z_FEATURE_PUBLICATION == 1
-// WiFi-specific parameters
-#define SSID "***"
-#define PASS "***"
 
 // Client mode values (comment/uncomment as needed)
 #define MODE "client"
