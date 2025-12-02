@@ -1,55 +1,16 @@
 #include <Arduino.h>
-#include <WiFi.h>
-#include <zenoh-pico.h>
-
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #include "config.h"
+#include "WiFiManager.h"
+#include "ZenohPublisher.h"
 
 #if Z_FEATURE_PUBLICATION == 1
 
-// Client mode values (comment/uncomment as needed)
-#define MODE "client"
-#define LOCATOR "tcp/192.168.0.118:7447"  // If empty, it will scout
-// Peer mode values (comment/uncomment as needed)
-// #define MODE "peer"
-// #define LOCATOR "udp/224.0.0.225:7447#iface=en0"
-
-#define KEYEXPR "demo/example/zenoh-pico-pub"
-#define VALUE "[ARDUINO]{ESP32} Publication from Zenoh-Pico!"
-
-// FreeRTOS task handles
-TaskHandle_t publishTaskHandle = NULL;
-
-z_owned_session_t s;
-z_owned_publisher_t pub;
-static int idx = 0;
-
-// FreeRTOS task for publishing Zenoh messages
-void publishTask(void *parameter) {
-    char buf[256];
-    
-    while (1) {
-        sprintf(buf, "[%4d] %s", idx++, VALUE);
-
-        Serial.print("Writing Data ('");
-        Serial.print(KEYEXPR);
-        Serial.print("': '");
-        Serial.print(buf);
-        Serial.println("')");
-
-        // Create payload
-        z_owned_bytes_t payload;
-        z_bytes_copy_from_str(&payload, buf);
-
-        if (z_publisher_put(z_publisher_loan(&pub), z_bytes_move(&payload), NULL) < 0) {
-            Serial.println("Error while publishing data");
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay 1 second
-    }
-}
+// Global objects
+WiFiManager* wifiManager = nullptr;
+ZenohPublisher* zenohPublisher = nullptr;
 
 void setup() {
     // Initialize Serial for debug
@@ -57,86 +18,65 @@ void setup() {
     while (!Serial) {
         delay(1000);
     }
-
-    // Set WiFi in STA mode and trigger attachment
-    Serial.print("Connecting to WiFi...");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(SSID, PASS);
-    while (WiFi.status() != WL_CONNECTED) {
-        Serial.print(".");
-        delay(1000);
-    }
-    Serial.println("OK");
-
-    // Initialize Zenoh Session and other parameters
-    z_owned_config_t config;
-    z_config_default(&config);
-    zp_config_insert(z_config_loan_mut(&config), Z_CONFIG_MODE_KEY, MODE);
-    if (strcmp(LOCATOR, "") != 0) {
-        if (strcmp(MODE, "client") == 0) {
-            zp_config_insert(z_config_loan_mut(&config), Z_CONFIG_CONNECT_KEY, LOCATOR);
-        } else {
-            zp_config_insert(z_config_loan_mut(&config), Z_CONFIG_LISTEN_KEY, LOCATOR);
-        }
-    }
-
-    // Open Zenoh session
-    Serial.print("Opening Zenoh Session...");
-    if (z_open(&s, z_config_move(&config), NULL) < 0) {
-        Serial.println("Unable to open session!");
+    
+    Serial.println("\n=== ESP32 Zenoh Publisher ===");
+    
+    // Initialize WiFi
+    wifiManager = new WiFiManager(WIFI_SSID, WIFI_PASS);
+    if (!wifiManager->connect()) {
+        Serial.println("Failed to connect to WiFi!");
         while (1) {
-            ;
+            delay(1000);
         }
     }
-    Serial.println("OK");
-
-    // Start read and lease tasks for zenoh-pico
-    if (zp_start_read_task(z_session_loan_mut(&s), NULL) < 0 || zp_start_lease_task(z_session_loan_mut(&s), NULL) < 0) {
-        Serial.println("Unable to start read and lease tasks\n");
-        z_session_drop(z_session_move(&s));
+       
+    // Initialize Zenoh Publisher
+    zenohPublisher = new ZenohPublisher(ZENOH_MODE, ZENOH_LOCATOR, ZENOH_KEYEXPR);
+    
+    if (!zenohPublisher->initSession()) {
+        Serial.println("Failed to initialize Zenoh session!");
         while (1) {
-            ;
+            delay(1000);
         }
     }
-
-    // Declare Zenoh publisher
-    Serial.print("Declaring publisher for ");
-    Serial.print(KEYEXPR);
-    Serial.println("...");
-    z_view_keyexpr_t ke;
-    z_view_keyexpr_from_str_unchecked(&ke, KEYEXPR);
-    if (z_declare_publisher(z_session_loan(&s), &pub, z_view_keyexpr_loan(&ke), NULL) < 0) {
-        Serial.println("Unable to declare publisher for key expression!");
+    
+    if (!zenohPublisher->startTasks()) {
+        Serial.println("Failed to start Zenoh tasks!");
         while (1) {
-            ;
+            delay(1000);
         }
     }
-    Serial.println("OK");
-    Serial.println("Zenoh setup finished!");
-
-    delay(300);
-
-    // Create FreeRTOS task for publishing
-    xTaskCreate(
-        publishTask,           // Task function
-        "PublishTask",         // Task name
-        4096,                  // Stack size (bytes)
-        NULL,                  // Task parameters
-        1,                     // Task priority
-        &publishTaskHandle     // Task handle
-    );
-
-    Serial.println("FreeRTOS publish task created!");
+    
+    if (!zenohPublisher->declarePublisher()) {
+        Serial.println("Failed to declare publisher!");
+        while (1) {
+            delay(1000);
+        }
+    }
+    
+    // Start publishing task
+    zenohPublisher->startPublishTask(ZENOH_VALUE, PUBLISH_INTERVAL_MS);
+    
+    Serial.println("=== Setup Complete ===\n");
 }
 
 void loop() {
-    // Empty loop - all work is done in FreeRTOS tasks
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // Monitor WiFi connection
+    if (!wifiManager->isConnected()) {
+        Serial.println("WiFi connection lost! Reconnecting...");
+        wifiManager->connect();
+    }
+    
+    // Main loop just monitors - all work is done in FreeRTOS tasks
+    vTaskDelay(pdMS_TO_TICKS(5000));
 }
+
 #else
 void setup() {
+    Serial.begin(115200);
     Serial.println("ERROR: Zenoh pico was compiled without Z_FEATURE_PUBLICATION but this example requires it.");
-    return;
 }
-void loop() {}
+void loop() {
+    delay(1000);
+}
 #endif
