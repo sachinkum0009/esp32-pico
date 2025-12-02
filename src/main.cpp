@@ -2,6 +2,9 @@
 #include <WiFi.h>
 #include <zenoh-pico.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #if Z_FEATURE_PUBLICATION == 1
 // WiFi-specific parameters
 #define SSID "***"
@@ -17,9 +20,37 @@
 #define KEYEXPR "demo/example/zenoh-pico-pub"
 #define VALUE "[ARDUINO]{ESP32} Publication from Zenoh-Pico!"
 
+// FreeRTOS task handles
+TaskHandle_t publishTaskHandle = NULL;
+
 z_owned_session_t s;
 z_owned_publisher_t pub;
 static int idx = 0;
+
+// FreeRTOS task for publishing Zenoh messages
+void publishTask(void *parameter) {
+    char buf[256];
+    
+    while (1) {
+        sprintf(buf, "[%4d] %s", idx++, VALUE);
+
+        Serial.print("Writing Data ('");
+        Serial.print(KEYEXPR);
+        Serial.print("': '");
+        Serial.print(buf);
+        Serial.println("')");
+
+        // Create payload
+        z_owned_bytes_t payload;
+        z_bytes_copy_from_str(&payload, buf);
+
+        if (z_publisher_put(z_publisher_loan(&pub), z_bytes_move(&payload), NULL) < 0) {
+            Serial.println("Error while publishing data");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay 1 second
+    }
+}
 
 void setup() {
     // Initialize Serial for debug
@@ -85,26 +116,23 @@ void setup() {
     Serial.println("Zenoh setup finished!");
 
     delay(300);
+
+    // Create FreeRTOS task for publishing
+    xTaskCreate(
+        publishTask,           // Task function
+        "PublishTask",         // Task name
+        4096,                  // Stack size (bytes)
+        NULL,                  // Task parameters
+        1,                     // Task priority
+        &publishTaskHandle     // Task handle
+    );
+
+    Serial.println("FreeRTOS publish task created!");
 }
 
 void loop() {
-    delay(1000);
-    char buf[256];
-    sprintf(buf, "[%4d] %s", idx++, VALUE);
-
-    Serial.print("Writing Data ('");
-    Serial.print(KEYEXPR);
-    Serial.print("': '");
-    Serial.print(buf);
-    Serial.println("')");
-
-    // Create payload
-    z_owned_bytes_t payload;
-    z_bytes_copy_from_str(&payload, buf);
-
-    if (z_publisher_put(z_publisher_loan(&pub), z_bytes_move(&payload), NULL) < 0) {
-        Serial.println("Error while publishing data");
-    }
+    // Empty loop - all work is done in FreeRTOS tasks
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 #else
 void setup() {
